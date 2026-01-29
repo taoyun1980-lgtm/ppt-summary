@@ -1,6 +1,3 @@
-import JSZip from "jszip";
-import { XMLParser } from "fast-xml-parser";
-
 export const runtime = "nodejs";
 
 type StreamWriter = WritableStreamDefaultWriter<Uint8Array>;
@@ -27,33 +24,6 @@ function numericSlideSort(a: string, b: string) {
   const aNum = Number(a.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
   const bNum = Number(b.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
   return aNum - bNum;
-}
-
-async function extractSlidesText(buffer: Buffer): Promise<string[]> {
-  const zip = await JSZip.loadAsync(buffer);
-  const slideFiles = Object.keys(zip.files)
-    .filter((name) => name.startsWith("ppt/slides/slide") && name.endsWith(".xml"))
-    .sort(numericSlideSort);
-
-  const parser = new XMLParser({
-    ignoreAttributes: true,
-    removeNSPrefix: true,
-  });
-
-  const slides: string[] = [];
-  for (const fileName of slideFiles) {
-    const xml = await zip.file(fileName)?.async("string");
-    if (!xml) {
-      slides.push("");
-      continue;
-    }
-    const json = parser.parse(xml);
-    const texts: string[] = [];
-    collectTexts(json, texts);
-    slides.push(texts.join(" ").replace(/\s+/g, " ").trim());
-  }
-
-  return slides;
 }
 
 async function summarizeSlide(text: string, slideIndex: number) {
@@ -125,25 +95,11 @@ function sendEvent(
 
 export async function POST(req: Request) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("file");
+    const body = (await req.json()) as { slides?: string[] };
+    const slides = body.slides ?? [];
 
-    if (!file || !(file instanceof File)) {
-      return Response.json({ error: "No file uploaded." }, { status: 400 });
-    }
-
-    if (!file.name.endsWith(".pptx")) {
-      return Response.json(
-        { error: "Only .pptx files are supported." },
-        { status: 400 }
-      );
-    }
-
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const slides = await extractSlidesText(buffer);
-
-    if (!slides.length) {
-      return Response.json({ error: "No slides found." }, { status: 400 });
+    if (!Array.isArray(slides) || slides.length === 0) {
+      return Response.json({ error: "No slides provided." }, { status: 400 });
     }
 
     if (slides.length > 50) {

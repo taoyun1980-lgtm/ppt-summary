@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import JSZip from "jszip";
+import { XMLParser } from "fast-xml-parser";
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
@@ -10,6 +12,60 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [controller, setController] = useState<AbortController | null>(null);
+
+  const collectTexts = (node: unknown, out: string[]) => {
+    if (node === null || node === undefined) return;
+    if (typeof node === "string") return;
+    if (Array.isArray(node)) {
+      for (const item of node) collectTexts(item, out);
+      return;
+    }
+    if (typeof node === "object") {
+      for (const [key, value] of Object.entries(node)) {
+        if (key === "t" && typeof value === "string") {
+          out.push(value);
+        } else {
+          collectTexts(value, out);
+        }
+      }
+    }
+  };
+
+  const numericSlideSort = (a: string, b: string) => {
+    const aNum = Number(a.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
+    const bNum = Number(b.match(/slide(\d+)\.xml$/)?.[1] ?? 0);
+    return aNum - bNum;
+  };
+
+  const extractSlidesText = async (file: File) => {
+    const buffer = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buffer);
+    const slideFiles = Object.keys(zip.files)
+      .filter(
+        (name) => name.startsWith("ppt/slides/slide") && name.endsWith(".xml")
+      )
+      .sort(numericSlideSort);
+
+    const parser = new XMLParser({
+      ignoreAttributes: true,
+      removeNSPrefix: true,
+    });
+
+    const slides: string[] = [];
+    for (const fileName of slideFiles) {
+      const xml = await zip.file(fileName)?.async("string");
+      if (!xml) {
+        slides.push("");
+        continue;
+      }
+      const json = parser.parse(xml);
+      const texts: string[] = [];
+      collectTexts(json, texts);
+      slides.push(texts.join(" ").replace(/\s+/g, " ").trim());
+    }
+
+    return slides;
+  };
 
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -24,17 +80,29 @@ export default function Home() {
       return;
     }
 
-    const formData = new FormData();
-    // Avoid non-ASCII filename issues in multipart headers
-    formData.append("file", file, "upload.pptx");
+    if (!file.name.endsWith(".pptx")) {
+      setError("仅支持 .pptx 文件。");
+      return;
+    }
 
     setLoading(true);
     const abortController = new AbortController();
     setController(abortController);
     try {
+      const slides = await extractSlidesText(file);
+      if (slides.length === 0) {
+        throw new Error("未解析到任何页面内容。");
+      }
+      if (slides.length > 50) {
+        throw new Error("页数超过 50，请上传更小的文件。");
+      }
+
       const res = await fetch("/api/summarize-ppt", {
         method: "POST",
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ slides }),
         signal: abortController.signal,
       });
 
